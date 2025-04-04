@@ -4,21 +4,20 @@ from typing import Optional, List, Literal
 
 # Define the schema for validation
 db_schema = {
-    "name": {"type": str, "length": 51, "regex": r"[А-Яа-яЁёA-Za-z0-9\s]+"},
-    "authors": {"type": str, "length": 51, "regex": r"[А-Яа-яЁёA-Za-z\s,]+"},
-    "genres": {"type": str, "length": 71, "regex": r"[А-Яа-яЁёA-Za-z\s,]+"},
-    "year": {"type": int, "length": 5, "regex": r"\d{4}"},
-    "width": {"type": float, "length": 6, "regex": r"\d+\.\d+"},
-    "height": {"type": float, "length": 6, "regex": r"\d+\.\d+"},
-    "book_type": {"type": str, "length": 8, "regex": r"мягкий|твердый"},
-    "source": {"type": str, "length": 11, "regex": r"покупка|подарок|наследство"},
-    "date_added": {"type": str, "length": 11, "regex": r"\d{2}-\d{2}-\d{4}"},
-    "date_read": {"type": Optional[str], "length": 11, "regex": r"\d{2}-\d{2}-\d{4}"},
-    "rating": {"type": Optional[str], "length": 101, "regex": r"([1-9]|10)/10 - ."},
-    "search_field": {"type": str, "length": 1000, "regex": r"authors|genres|name"},
-    "update_name": {"type": str, "length": 1000, "regex": r".*"},
+    "name": {"length": 51, "regex": r"[А-Яа-яЁёA-Za-z0-9\s]+"},
+    "authors": {"length": 51, "regex": r"[А-Яа-яЁёA-Za-z\s,]+"},
+    "genres": {"length": 71, "regex": r"[А-Яа-яЁёA-Za-z\s,]+"},
+    "year": {"length": 5, "regex": r"\d{4}"},
+    "width": {"length": 6, "regex": r"[0-9.]"},
+    "height": {"length": 6, "regex": r"[0-9.]"},
+    "book_type": {"length": 8, "regex": r"мягкий|твердый"},
+    "source": {"length": 11, "regex": r"покупка|подарок|наследство"},
+    "date_added": {"length": 11, "regex": r"\d{2}-\d{2}-\d{4}"},
+    "date_read": {"length": 11, "regex": r"\d{2}-\d{2}-\d{4}"},
+    "rating": {"length": 101, "regex": r"([1-9]|10)/10 - ."},
+    "search_field": {"length": 1000, "regex": r"authors|genres|name"},
+    "update_name": {"length": 1000, "regex": r".*"},
     "update_field": {
-        "type": str,
         "length": 1000,
         "regex": r"name|year|authors|genres|width|height|book_type|source|date_added|date_read|rating",
     },
@@ -33,15 +32,15 @@ def validate_field(field: str, value) -> None:
         raise ValueError(f"Неверное значение для {field}: {value}")
 
 
-def validate_name(name) -> None:
+def validate_name(name: str) -> None:
     validate_field("name", name)
 
 
-def validate_authors(authors) -> None:
+def validate_authors(authors: str) -> None:
     validate_field("authors", authors)
 
 
-def validate_genres(genres) -> None:
+def validate_genres(genres: str) -> None:
     validate_field("genres", genres)
 
 
@@ -80,7 +79,7 @@ def validate_date_added(date_added, year) -> None:
     date_added_datetime = datetime.strptime(date_added, "%d-%m-%Y")
     if date_added_datetime >= datetime.now():
         raise ValueError("Дата добавления не может быть позже текущей даты")
-    if date_added_datetime.year < year:
+    if date_added_datetime.year < int(year):
         raise ValueError("Год добавления не может быть раньше года издания")
 
 
