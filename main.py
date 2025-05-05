@@ -6,8 +6,14 @@ import logging
 import re
 from datetime import datetime
 import socket
+import os
+from contextlib import contextmanager
+import shutil
+from datetime import datetime
+import threading
 
 FILENAME = "home_library.txt"
+
 HEADERS = [
     "id",
     "name",
@@ -24,9 +30,9 @@ HEADERS = [
 ]
 
 regex_schema = {
-    "name": r"[А-Яа-яЁёA-Za-z0-9\s]{1,100}",
-    "authors": r"[А-Яа-яЁёA-Za-z\s,]{1,130}",
-    "genres": r"[А-Яа-яЁёA-Za-z\s,]{1,100}",
+    "name": r"(?!.*([\s])\1)[А-Яа-яЁёA-Za-z0-9\s]{1,100}",
+    "authors": r"(?!.*([\s,])\1)[А-Яа-яЁёA-Za-z\s,]{1,130}",
+    "genres": r"^(?!.*([\s,])\1)[А-Яа-яЁёA-Za-z\s,]{1,100}",
     "year": r"\d{4}",
     "width": r"\d+(\.\d+)?",
     "height": r"\d+(\.\d+)?",
@@ -34,8 +40,132 @@ regex_schema = {
     "source": r"покупка|подарок|наследство",
     "date_added": r"\d{2}-\d{2}-\d{4}",
     "date_read": r"\d{2}-\d{2}-\d{4}",
-    "rating": r"([1-9]|10)/10 - .{1,200}",
+    "rating": r"([1-9]|10)/10 - [А-Яа-яЁёA-Za-z0-9\s\,\.\!\?]{1,200}",
 }
+
+library = """
+
+
+ -                   @-                          @-                   %
+   -                -           @@@@@@@            @                @  
+    @-            -          @@@@@@ @@@@@@           @            @-   
+      @         +        @@@@@@@       @@@@@@@         =         -     
+          @@          @@@@@@@             @@@@@@@          @@          
+        @@@@@@     @@@@@@       @@@@@@@       @@@@@@     @@@@@@        
+       @@@@@@@ @@@@@@@        @@@@   @@@@        @@@@@@@@@@@@@@        
+         @@@@@@@@@            @@@     @@@            @@@@@@@@@         
+        @@@@@@@@-             @@@     @@@              @@@@@@@@ *      
+     @@@@@@      @             @@@@@@@@@              -     @@@@@@-    
+   @@@@@           *             @@@@@              -          @@@@ -  
+ @- @@@              -                            #             @@@  @-
+-   @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@    
+        @@@      @@@   @@@     @@@   @@@     @@@   @@@      @@@        
+        @@@@@@@@@@@@   @@@@@@@@@@@   @@@@@@@@@@@   @@@@@@@@@@@@        
+         @@@@@@@@@@    @@@@@@@@@@@   @@@@@@@@@@@    @@@@@@@@@@         
+          @@@   @@@     @@@   @@@     @@@- =@@@     @@@   @@@          
+          @@@   @@@     @@@   @@@    @@@@+= @@@     @@@   @@@          
+          @@@   @@@     @@@   @@@  @*@@@@   @@@     @@@   @@@          
+          @@@   @@@     @@@   @@@ -* -@@@   @@@     @@@   @@@          
+          @@@   @@@     @@@   @@@--@- @@@   @@@     @@@   @@@          
+          @@@   @@@     @@@   @@@ +@  @@@   @@@     @@@   @@@          
+          @@@   @@@     @@@ @-@@@     @@@-  @@@     @@@   @@@          
+          @@@   @@@     @@@-@-@@@     @@@  -@@@     @@@   @@@          
+          @@@   @@@     @@@ *-@@@     @@@   @@@     @@@   @@@          
+          @@@   @@@     @@@   @@@     @@@   @@@=    @@@   @@@          
+          @@@   @@@    -@@@   @@@     @@@   @@@ @   @@@   @@@          
+ -        @@@   @@@  =  @@@   @@@     @@@   @@@   = @@@   @@@         @
+   -      @@@   @@@@    @@@   @@@     @@@   @@@     *@@   @@@       @= 
+    @=    @@@   @@@     @@@   @@@     @@@   @@@     @@@   @@@      -   
+      @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@-     
+      @@@ @@                                               @@ @@@      
+   @@@@@@@@@@@                                           @@@@@@@@@@@   
+   @@@@@@@@@@@                                           @@@@@@@@@@@   
+   @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@   
+   @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@   
+     -           @                                    -           @-   
+   -               =                                +               @  
+ =                   -                            @                   *
+
+"""
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s]: %(message)s"
+)
+
+fake = Faker("ru_RU")
+
+genres_list = [
+    "Фэнтези",
+    "Биография",
+    "Научная фантастика",
+    "Детектив",
+    "Приключения",
+    "Романтика",
+    "Ужасы",
+    "Исторический",
+    "Научный",
+    "Мистика",
+    "Комедия",
+    "Триллер",
+    "Драма",
+    "Приключенческий роман",
+    "Сказка",
+    "Поэзия",
+    "Классика",
+    "Современная проза",
+    "Философия",
+    "Психология",
+    "Социальная фантастика",
+    "Мифология",
+    "Спорт",
+    "Кулинария",
+    "Техническая литература",
+    "Автобиография",
+    "Справочная литература",
+]
+
+
+def create_backup():
+    backup_dir = Path("backups")
+    backup_dir.mkdir(exist_ok=True)
+    backups = list(backup_dir.glob("library_backup_*.txt"))
+    if len(backups) >= 5:
+        oldest_backup = min(backups, key=os.path.getmtime)
+        oldest_backup.unlink()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = backup_dir / f"library_backup_{timestamp}.txt"
+    shutil.copy2(FILENAME, backup_file)
+    logging.info(f"Создана резервная копия: {backup_file}")
+
+
+def recover_from_backup():
+    backup_dir = Path("backups")
+    if not backup_dir.exists():
+        return False
+    
+    backups = sorted(backup_dir.glob("library_backup_*.txt"), key=os.path.getmtime)
+    if backups:
+        latest_backup = backups[-1]
+        shutil.copy2(latest_backup, FILENAME)
+        logging.info(f"Восстановлено из резервной копии: {latest_backup}")
+        return True
+    return False
+
+
+@contextmanager
+def library_file_manager():
+    """
+    Контекстный менеджер для автоматического управления файлом библиотеки
+    """
+    try:
+        if not Path(FILENAME).exists():
+            with open(FILENAME, 'w', encoding='utf-8') as f:
+                pass 
+        yield
+    except Exception as e:
+        logging.error(f"Ошибка при работе с файлом библиотеки: {e}")
+        recover_from_backup()
+        raise
 
 
 def validate_regex(field: str, value) -> None:
@@ -49,22 +179,25 @@ def validate_year(year) -> None:
     validate_regex("year", year)
     if int(year) > datetime.now().year:
         raise ValueError("Год издания не может быть больше текущего года")
+    if int(year) < 1500:
+        raise ValueError("Год издания не может меньше 1500")
+
 
 
 def validate_width(width) -> None:
     validate_regex("width", width)
     if float(width) > 1000:
         raise ValueError("Ширина книги не может быть больше 1 метра")
-    elif float(width) < 0:
-        raise ValueError("Ширина книги не может быть отрицательной")
+    elif float(width) <= 0:
+        raise ValueError("Ширина книги не может быть отрицательной или равна 0")
 
 
 def validate_height(height) -> None:
     validate_regex("height", height)
     if float(height) > 1000:
         raise ValueError("Высота книги не может быть больше 1 метра")
-    elif float(height) < 0:
-        raise ValueError("Высота книги не может быть отрицательной")
+    elif float(height) <= 0:
+        raise ValueError("Высота книги не может быть отрицательной или равна 0")
 
 
 def validate_date_added(date_added, year) -> None:
@@ -107,13 +240,6 @@ def line_to_dict(line: str) -> dict:
     }
 
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s]: %(message)s"
-)
-
-fake = Faker("ru_RU")
-
-
 def authors_set():
     authors = set()
     while len(authors) < 100:
@@ -121,45 +247,12 @@ def authors_set():
     return authors
 
 
-genres_list = [
-    "Фэнтези",
-    "Биография",
-    "Научная фантастика",
-    "Детектив",
-    "Приключения",
-    "Романтика",
-    "Ужасы",
-    "Исторический",
-    "Научный",
-    "Мистика",
-    "Комедия",
-    "Триллер",
-    "Драма",
-    "Приключенческий роман",
-    "Сказка",
-    "Поэзия",
-    "Классика",
-    "Современная проза",
-    "Философия",
-    "Психология",
-    "Социальная фантастика",
-    "Мифология",
-    "Спорт",
-    "Кулинария",
-    "Техническая литература",
-    "Автобиография",
-    "Справочная литература",
-]
-
-authors_list = list(authors_set())
-
-
 # SINGLE BOOK
 def generate_valid_book(authors_list, genres_list) -> dict:
     name = fake.sentence(nb_words=random.randint(1, 5)).rstrip(".")
     authors = ",".join(random.sample(authors_list, k=random.randint(1, 3)))
     genres = ",".join(random.sample(genres_list, k=random.randint(1, 4)))
-    year = str(random.randint(1000, 2025))
+    year = str(random.randint(1500, 2025))
     width = round(random.uniform(10.0, 200.0), 1)
     height = round(random.uniform(10.0, 200.0), 1)
     book_type = random.choice(["мягкий", "твердый"])
@@ -217,6 +310,7 @@ def generate_valid_book(authors_list, genres_list) -> dict:
 
 
 def get_next_id() -> int:
+    """Генерация ID"""
     if not Path(FILENAME).exists():
         return 1
 
@@ -229,6 +323,7 @@ def get_next_id() -> int:
 
 
 def is_unique_book(book: dict) -> bool:
+    """Проверка на уникальность книги"""
     original_filename = Path(FILENAME)
     with original_filename.open("r") as file:
         for line in file:
@@ -245,19 +340,23 @@ def is_unique_book(book: dict) -> bool:
 
 
 def add_book(book: dict):
+    """ Операция добавление книги - добавление ID + проверка на уникальность"""
+    create_backup()
     book_id = get_next_id()
     book["id"] = book_id
-    original_filename = Path(FILENAME)
-    if is_unique_book(book):
-        with original_filename.open("a") as file:
-            file.write(dict_to_line(book) + "\n")
-        return f"Добавлена книга: {book['name']} (ID: {book_id})"
-    else:
-        return f"Книга уже добавлена: {book['name']}, написанная {book['authors']}"
+    
+    with library_file_manager():
+        if is_unique_book(book):
+            with open(FILENAME, ("a")) as file:
+                file.write(dict_to_line(book) + "\n")
+            return f"Добавлена книга: {book['name']} (ID: {book_id})"
+        else:
+            return f"Книга уже добавлена: {book['name']}, написанная {book['authors']}"
 
 
 # MULTIPLE BOOKS
 def print_all_books():
+    """ Вывести книги"""
     original_filename = Path(FILENAME)
     res = ""
     with original_filename.open("r") as file:
@@ -281,33 +380,49 @@ def print_all_books():
 
 
 def print_books(books: List[dict]) -> str:
-    """
-    Печатает информацию о книгах.
-    """
+    """ Вывести книгу"""
     if not books:
-        return "Нет книг для отображения."
+        return "Нет книг для отображения.\n"
     res = ""
-    res += f"Найдено {len(books)} книг(и):\n"
+    res += f"Отображено {len(books)} книг(и):\n"
     for book in books:
-        res += (
-            f"ID: {book['id']},\n"
-            + f"\tНазвание: {book['name']},\n"
-            + f"\tАвторы: {book['authors']},\n"
-            + f"\tГод: {book['year']},\n"
-            + f"\tЖанры: {book['genres']},\n"
-            + f"\tШирина: {book['width']},\n"
-            + f"\tВысота: {book['height']},\n"
-            + f"\tТип книги: {book['book_type']},\n"
-            + f"\tИсточник: {book['source']},\n"
-            + f"\tДата добавления: {book['date_added']},\n"
-            + f"\tДата прочтения: {book['date_read']},\n"
-            + f"\tРейтинг: {book['rating']}\n"
-        )
-
+        try:
+            res += (
+                f"ID: {book['id']},\n"
+                + f"\tНазвание: {book['name']},\n"
+                + f"\tАвторы: {book['authors']},\n"
+                + f"\tГод: {book['year']},\n"
+                + f"\tЖанры: {book['genres']},\n"
+                + f"\tШирина: {book['width']},\n"
+                + f"\tВысота: {book['height']},\n"
+                + f"\tТип книги: {book['book_type']},\n"
+                + f"\tИсточник: {book['source']},\n"
+                + f"\tДата добавления: {book['date_added']},\n"
+                + f"\tДата прочтения: {book['date_read']},\n"
+                + f"\tРейтинг: {book['rating']}\n"
+            )
+        except KeyError:
+            res += (f"\tНазвание: {book['name']},\n"
+                + f"\tАвторы: {book['authors']},\n"
+                + f"\tГод: {book['year']},\n"
+                + f"\tЖанры: {book['genres']},\n"
+                + f"\tШирина: {book['width']},\n"
+                + f"\tВысота: {book['height']},\n"
+                + f"\tТип книги: {book['book_type']},\n"
+                + f"\tИсточник: {book['source']},\n"
+                + f"\tДата добавления: {book['date_added']},\n"
+                + f"\tДата прочтения: {book['date_read']},\n"
+                + f"\tРейтинг: {book['rating']}\n"
+            )
+            
     return res
 
 
 def modify_books_file(new_books: List[dict] = None, update=False) -> str:
+    """ 
+    Редактируем файл базы данных для операций удаления и редактирования
+    Функция обеспечивает атомарность операций - изменения либо применяются полностью, либо не применяются вообще.
+    """
     res = ""
     temp_filename = Path("temp.txt")
     found = False
@@ -324,19 +439,15 @@ def modify_books_file(new_books: List[dict] = None, update=False) -> str:
                     # Обновляем поля книги
                     if update:
                         book.update(new_book)
-                        if is_unique_book(book):
-                            temp_file.write(dict_to_line(book) + "\n")
-                            res += (
-                                f"Обновлена книга: {book['name']} (ID: {book['id']})\n"
-                            )
-                            break
-                        else:
-                            res += f"Книга с именем {book['name']} уже есть, написанная {book['authors']}\n"
+                        temp_file.write(dict_to_line(book) + "\n")
+                        res += (
+                            f"Обновлена книга: {book['name']} (ID: {book['id']})\n"
+                        )
+                        break
                     else:
                         res += f"Удалена книга: {book['name']} (ID: {book['id']})\n"
                         break
             else:
-                # Если книга не обновляется, записываем её как есть
                 temp_file.write(line)
 
     if found:
@@ -354,12 +465,20 @@ def delete_books(client_socket, field: str, value: str) -> str:
     Если находит, то записывает все строки до нее и после нее в файл temp.txt,
     затем удаляет файл home_library.txt и переименовывает temp.txt в home_library.txt.
     """
-    client_socket.send("Удалить? (д/н)".encode())
+    books = search_books(field, value)
+    results = "Найденые книги:\n"
+    results += print_books(books)
+    client_socket.send(str(results).encode())
+    if not books:
+        return ""
+    client_socket.send("Удалить? (д/н): \n".encode())
     choice = client_socket.recv(1024).decode().strip().lower()
     while choice not in ("д", "н", "y", "n"):
-        client_socket.send("Некорректный ввод".encode())
+        client_socket.send("Некорректный ввод\n".encode())
+        client_socket.send("Удалить? (д/н): ".encode())
+        choice = client_socket.recv(1024).decode().strip().lower()
     if choice == "д" or choice == "y":
-        return modify_books_file(search_books(field, value))
+        return modify_books_file(books)
     return ""
 
 
@@ -372,74 +491,40 @@ def search_books(field: str, value: str) -> List[dict]:
         for line in file:
             book = line_to_dict(line)
             value_book = book[field]
-            if str(value).lower() in value_book.lower():
-                result.append(book)
-                if field == "id":
+            if field in ["year", "width", "height"]:
+                if book[field] == value:
+                    result.append(book)
+            elif field == "id":
+                if book[field] == value:
                     return [book]
+            else:
+                if str(value).lower() in value_book.lower():
+                    result.append(book)
+                    
     return result
 
 
 def update_books(client_socket, field: str, value: str, new_field, new_value) -> str:
+    """ Обновление поля в строке"""
     books = search_books(field, value)
     for book in books:
         book[new_field] = new_value
-    results = "Найдены книги:\n"
+    results = "Обновленные книги:\n"
     results += print_books(books)
+    if not books:
+        return ""
     client_socket.send(str(results).encode())
 
-    client_socket.send("Удалить? (д/н)".encode())
+    
+    client_socket.send("Обновить? (д/н): ".encode())
     choice = client_socket.recv(1024).decode().strip().lower()
     while choice not in ("д", "н", "y", "n"):
-        client_socket.send("Некорректный ввод".encode())
+        client_socket.send("Некорректный ввод\n".encode())
+        client_socket.send("Обновить? (д/н): ".encode())
+        choice = client_socket.recv(1024).decode().strip().lower()
     if choice == "д" or choice == "y":
         return modify_books_file(books, True)
     return ""
-
-
-library = """
-
-
- -                   @-                          @-                   %
-   -                -           @@@@@@@            @                @  
-    @-            -          @@@@@@ @@@@@@           @            @-   
-      @         +        @@@@@@@       @@@@@@@         =         -     
-          @@          @@@@@@@             @@@@@@@          @@          
-        @@@@@@     @@@@@@       @@@@@@@       @@@@@@     @@@@@@        
-       @@@@@@@ @@@@@@@        @@@@   @@@@        @@@@@@@@@@@@@@        
-         @@@@@@@@@            @@@     @@@            @@@@@@@@@         
-        @@@@@@@@-             @@@     @@@              @@@@@@@@ *      
-     @@@@@@      @             @@@@@@@@@              -     @@@@@@-    
-   @@@@@           *             @@@@@              -          @@@@ -  
- @- @@@              -                            #             @@@  @-
--   @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@    
-        @@@      @@@   @@@     @@@   @@@     @@@   @@@      @@@        
-        @@@@@@@@@@@@   @@@@@@@@@@@   @@@@@@@@@@@   @@@@@@@@@@@@        
-         @@@@@@@@@@    @@@@@@@@@@@   @@@@@@@@@@@    @@@@@@@@@@         
-          @@@   @@@     @@@   @@@     @@@- =@@@     @@@   @@@          
-          @@@   @@@     @@@   @@@    @@@@+= @@@     @@@   @@@          
-          @@@   @@@     @@@   @@@  @*@@@@   @@@     @@@   @@@          
-          @@@   @@@     @@@   @@@ -* -@@@   @@@     @@@   @@@          
-          @@@   @@@     @@@   @@@--@- @@@   @@@     @@@   @@@          
-          @@@   @@@     @@@   @@@ +@  @@@   @@@     @@@   @@@          
-          @@@   @@@     @@@ @-@@@     @@@-  @@@     @@@   @@@          
-          @@@   @@@     @@@-@-@@@     @@@  -@@@     @@@   @@@          
-          @@@   @@@     @@@ *-@@@     @@@   @@@     @@@   @@@          
-          @@@   @@@     @@@   @@@     @@@   @@@=    @@@   @@@          
-          @@@   @@@    -@@@   @@@     @@@   @@@ @   @@@   @@@          
- -        @@@   @@@  =  @@@   @@@     @@@   @@@   = @@@   @@@         @
-   -      @@@   @@@@    @@@   @@@     @@@   @@@     *@@   @@@       @= 
-    @=    @@@   @@@     @@@   @@@     @@@   @@@     @@@   @@@      -   
-      @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@-     
-      @@@ @@                                               @@ @@@      
-   @@@@@@@@@@@                                           @@@@@@@@@@@   
-   @@@@@@@@@@@                                           @@@@@@@@@@@   
-   @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@   
-   @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@   
-     -           @                                    -           @-   
-   -               =                                +               @  
- =                   -                            @                   *
-
-"""
 
 
 def display_menu():
@@ -462,81 +547,225 @@ def display_add_menu():
         "1.3. Выход\n"
     )
 
+authors_list = list(authors_set())
+def handle_client(client_socket, addr):
+    """ Меню ввода команд"""
+    try:
+        print(f"Подключен клиент {addr}")
+        client_socket.sendall(library.encode())
+        client_socket.sendall("Добро пожаловать в библиотеку!\n".encode())
+        while True:
+            client_socket.send(display_menu().encode())
+            choice = client_socket.recv(1024).decode().strip()
 
-"""
-Обернуть в Netcat сервер
-Реализованы функции:
-1. Добавить книгу
-1.1. Ввести книгу -  # TODO реализовать функцию ввода всех значений и запуска валидации
-1.2. Сгенерировать книгу
-1.3. Добавить книгу от словаря
-book_example = {
-    "name": "1984",
-    "year": "1949",
-    "authors": "George Orwell",
-    "genres": "Dystopian, Political Fiction",
-    "width": "5.5",
-    "height": "8.0",
-    "book_type": "Мягкий",
-    "source": "Подарок",
-    "date_added": "2023-10-01",
-    "date_read": "2023-10-10",
-    "rating": "5/10 - супер книга"
-}
-book1 = generate_valid_book(authors_list, genres_list)
-add_book(book1)
-add_book(book_example)
-2. Показать все книги 
-2.1. print_all_books()
-
-3. Искать книгу
-3.1. Ввести поле для поиска и значение
-3.2. Вывести книги
-a = search_books("source", "подарок")
-print_books(a)
-
-4. Обновить книгу
-4.1. Ввести поле для поиска и значение
-4.2. Ввести поле для изменения и значение
-update_books("id", "1", "name", "Sleep")
-
-5. Удалить книгу
-5.1. Ввести поле для поиска и значение
-delete_books("id", "1")
-"""
-
-
-def handle_client(client_socket):
-    client_socket.sendall(library.encode())
-    client_socket.sendall("Добро пожаловать в библиотеку!\n".encode())
-    while True:
-        client_socket.send(display_menu().encode())
-        choice = client_socket.recv(1024).decode().strip()
-
-        if choice == "1":
-            while True:
-                client_socket.send(display_add_menu().encode())
-                choice_add = client_socket.recv(1024).decode().strip()
-                if choice_add == "1.1":
-                    book = generate_valid_book(authors_list, genres_list)
-                    client_socket.send("Добавить? (д/н)".encode())
-                    choice = client_socket.recv(1024).decode().strip().lower()
-                    while choice not in ("д", "н", "y", "n"):
-                        client_socket.send("Некорретный ввод".encode())
-                    if choice == "д" or choice == "y":
+            if choice == "1":
+                while True:
+                    client_socket.send(display_add_menu().encode())
+                    choice_add = client_socket.recv(1024).decode().strip()
+                    if choice_add == "1.1" or choice_add == "1" or choice_add == "1.1.":
+                        book = generate_valid_book(authors_list, genres_list)
+                        client_socket.send(print_books([book]).encode())
+                        client_socket.send("Добавить? (д/н): \n".encode())
+                        choice = client_socket.recv(1024).decode().strip().lower()
+                        while choice not in ("д", "н", "y", "n"):
+                            client_socket.send("Некорретный ввод!\n".encode())
+                            client_socket.send("Добавить? (д/н): \n".encode())
+                            choice = client_socket.recv(1024).decode().strip()
+                        if choice == "д" or choice == "y":
+                            response = add_book(book)
+                            client_socket.send(response.encode())
+                            break
+                    elif choice_add == "1.2" or choice_add == "2" or choice_add == "1.2.":
+                        while True:
+                            try:
+                                client_socket.send("Введите название книги: ".encode())
+                                name = client_socket.recv(1024).decode().strip()
+                                validate_regex("name", name)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        # authors
+                        while True:
+                            try:
+                                client_socket.send(
+                                    "Введите авторов (через запятую): ".encode()
+                                )
+                                authors = client_socket.recv(1024).decode().strip()
+                                validate_regex("authors", authors)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        # genres
+                        while True:
+                            try:
+                                client_socket.send(
+                                    "Введите жанр (через запятую): ".encode()
+                                )
+                                genres = client_socket.recv(1024).decode().strip()
+                                validate_regex("genres", genres)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        # year
+                        while True:
+                            try:
+                                client_socket.send("Введите год издания: ".encode())
+                                year = client_socket.recv(1024).decode().strip()
+                                validate_year(year)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        # width
+                        while True:
+                            try:
+                                client_socket.send("Введите ширину книги (мм): ".encode())
+                                width = client_socket.recv(1024).decode().strip()
+                                validate_width(width)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        # height
+                        while True:
+                            try:
+                                client_socket.send("Введите высоту книги (мм): ".encode())
+                                height = client_socket.recv(1024).decode().strip()
+                                validate_height(height)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        # book_type
+                        while True:
+                            try:
+                                client_socket.send(
+                                    "Введите тип обложки (мягкий/твердый): ".encode()
+                                )
+                                book_type = client_socket.recv(1024).decode().strip()
+                                validate_regex("book_type", book_type)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        # source
+                        while True:
+                            try:
+                                client_socket.send(
+                                    "Введите источник (покупка/подарок/наследство): ".encode()
+                                )
+                                source = client_socket.recv(1024).decode().strip()
+                                validate_regex("source", source)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        # date_added
+                        while True:
+                            try:
+                                client_socket.send(
+                                    "Введите дату добавления (DD-MM-YYYY): ".encode()
+                                )
+                                date_added = client_socket.recv(1024).decode().strip()
+                                validate_date_added(date_added, year)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        # date_read
+                        while True:
+                            try:
+                                client_socket.send(
+                                    "Введите дату прочтения (DD-MM-YYYY): ".encode()
+                                )
+                                date_read = client_socket.recv(1024).decode().strip()
+                                validate_date_read(date_read, date_added)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        # rating
+                        while True:
+                            try:
+                                client_socket.send(
+                                    "Введите рейтинг (X/10) - комментарий: ".encode()
+                                )
+                                rating = client_socket.recv(1024).decode().strip()
+                                validate_regex("rating", rating)
+                                break
+                            except ValueError as error:
+                                client_socket.send(f"Неверный ввод: {error}\n".encode())
+                        book = {
+                            "name": name,
+                            "authors": authors,
+                            "genres": genres,
+                            "year": year,
+                            "width": width,
+                            "height": height,
+                            "book_type": book_type,
+                            "source": source,
+                            "date_added": date_added,
+                            "date_read": date_read,
+                            "rating": rating,
+                        }
                         response = add_book(book)
                         client_socket.send(response.encode())
-                    break
-                elif choice_add == "1.2":
+                        break
+                    elif choice_add == "1.3" or choice_add == "3" or choice_add == "1.3.":
+                        break
+                    else:
+                        client_socket.send("Неверный выбор. Попробуйте снова.".encode())
+
+            elif choice == "2":
+                response = print_all_books()
+                client_socket.send(response.encode())
+
+            elif choice == "3":
+                client_socket.send(
+                    "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
+                )
+                search_field = client_socket.recv(1024).decode().strip().lower()
+                while search_field not in HEADERS:
+                    client_socket.send("Некорретный ввод!\n".encode())
+                    client_socket.send(
+                    "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
+                    )
+                    search_field = client_socket.recv(1024).decode().strip().lower()
+                client_socket.send("Введите поисковый запрос: ".encode())
+                search_value = client_socket.recv(1024).decode().strip().lower()
+                results = print_books(search_books(search_field, search_value))
+                client_socket.send(str(results).encode())
+
+            elif choice == "4":
+                client_socket.send(
+                    "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
+                )
+                search_field = client_socket.recv(1024).decode().strip().lower()
+                while search_field not in HEADERS:
+                    client_socket.send("Некорретный ввод!\n".encode())
+                    client_socket.send(
+                    "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
+                    )
+                    search_field = client_socket.recv(1024).decode().strip().lower()
+                client_socket.send("Введите поисковый запрос: ".encode())
+                search_value = client_socket.recv(1024).decode().strip().lower()
+                client_socket.send(
+                    "Введите поле для обновления (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
+                )
+                update_field = client_socket.recv(1024).decode().strip()
+                while update_field not in HEADERS:
+                    client_socket.send("Некорретный ввод!\n".encode())
+                    client_socket.send(
+                    "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
+                    )
+                    update_field = client_socket.recv(1024).decode().strip().lower()
+                if update_field == "name":
                     while True:
                         try:
                             client_socket.send("Введите название книги: ".encode())
                             name = client_socket.recv(1024).decode().strip()
                             validate_regex("name", name)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, name
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    # authors
+                elif update_field == "authors":
                     while True:
                         try:
                             client_socket.send(
@@ -544,10 +773,14 @@ def handle_client(client_socket):
                             )
                             authors = client_socket.recv(1024).decode().strip()
                             validate_regex("authors", authors)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, authors
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    # genres
+                elif update_field == "genres":
                     while True:
                         try:
                             client_socket.send(
@@ -555,37 +788,53 @@ def handle_client(client_socket):
                             )
                             genres = client_socket.recv(1024).decode().strip()
                             validate_regex("genres", genres)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, genres
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    # year
+                elif update_field == "year":
                     while True:
                         try:
                             client_socket.send("Введите год издания: ".encode())
                             year = client_socket.recv(1024).decode().strip()
                             validate_year(year)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, year
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    # width
+                elif update_field == "width":
                     while True:
                         try:
                             client_socket.send("Введите ширину книги (мм): ".encode())
                             width = client_socket.recv(1024).decode().strip()
                             validate_width(width)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, width
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    # height
+                elif update_field == "height":
                     while True:
                         try:
                             client_socket.send("Введите высоту книги (мм): ".encode())
                             height = client_socket.recv(1024).decode().strip()
                             validate_height(height)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, height
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    # book_type
+                elif update_field == "book_type":
                     while True:
                         try:
                             client_socket.send(
@@ -593,10 +842,14 @@ def handle_client(client_socket):
                             )
                             book_type = client_socket.recv(1024).decode().strip()
                             validate_regex("book_type", book_type)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, book_type
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    # source
+                elif update_field == "source":
                     while True:
                         try:
                             client_socket.send(
@@ -604,10 +857,14 @@ def handle_client(client_socket):
                             )
                             source = client_socket.recv(1024).decode().strip()
                             validate_regex("source", source)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, source
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    # date_added
+                elif update_field == "date_added":
                     while True:
                         try:
                             client_socket.send(
@@ -615,10 +872,14 @@ def handle_client(client_socket):
                             )
                             date_added = client_socket.recv(1024).decode().strip()
                             validate_date_added(date_added, year)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, date_added
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    # date_read
+                elif update_field == "date_read":
                     while True:
                         try:
                             client_socket.send(
@@ -626,10 +887,14 @@ def handle_client(client_socket):
                             )
                             date_read = client_socket.recv(1024).decode().strip()
                             validate_date_read(date_read, date_added)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, date_read
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    # rating
+                elif update_field == "rating":
                     while True:
                         try:
                             client_socket.send(
@@ -637,92 +902,61 @@ def handle_client(client_socket):
                             )
                             rating = client_socket.recv(1024).decode().strip()
                             validate_regex("rating", rating)
+                            response = update_books(
+                                client_socket, search_field, search_value, update_field, rating
+                            )
+                            client_socket.send(response.encode())
                             break
                         except ValueError as error:
                             client_socket.send(f"Неверный ввод: {error}\n".encode())
-                    book = {
-                        "name": name,
-                        "authors": authors,
-                        "genres": genres,
-                        "year": year,
-                        "width": width,
-                        "height": height,
-                        "book_type": book_type,
-                        "source": source,
-                        "date_added": date_added,
-                        "date_read": date_read,
-                        "rating": rating,
-                    }
-                    response = add_book(book)
-                    client_socket.send(response.encode())
-                    break
-                elif choice_add == "1.3":
-                    break
-                else:
-                    client_socket.send("Неверный выбор. Попробуйте снова.".encode())
 
-        elif choice == "2":
-            response = print_all_books()
-            client_socket.send(response.encode())
+            elif choice == "5":
+                client_socket.send(
+                    "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
+                )
+                search_field = client_socket.recv(1024).decode().strip().lower()
+                while search_field not in HEADERS:
+                    client_socket.send("Некорретный ввод!\n".encode())
+                    client_socket.send(
+                    "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
+                    )
+                    search_field = client_socket.recv(1024).decode().strip().lower()
+                client_socket.send("Введите поисковый запрос: ".encode())
+                search_value = client_socket.recv(1024).decode().strip().lower()
+                response = delete_books(client_socket, search_field, search_value)
+                client_socket.send(response.encode())
 
-        elif choice == "3":
-            client_socket.send(
-                "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
-            )
-            search_field = client_socket.recv(1024).decode().strip().lower()
-            client_socket.send("Введите поисковый запрос: ".encode())
-            search_value = client_socket.recv(1024).decode().strip().lower()
-            results = print_books(search_books(search_field, search_value))
-            client_socket.send(str(results).encode())
+            elif choice == "6":
+                client_socket.send("Выход из программы.".encode())
+                break
 
-        elif choice == "4":
-            client_socket.send(
-                "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
-            )
-            search_field = client_socket.recv(1024).decode().strip().lower()
-            client_socket.send("Введите поисковый запрос: ".encode())
-            search_value = client_socket.recv(1024).decode().strip().lower()
-            client_socket.send(
-                "Введите поле для обновления (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
-            )
-            update_field = client_socket.recv(1024).decode().strip()
-            client_socket.send("Введите обновленное значение: ".encode())
-            update_value = client_socket.recv(1024).decode().strip()
-            response = update_books(
-                client_socket, search_field, search_value, update_field, update_value
-            )
-            client_socket.send(response.encode())
-
-        elif choice == "5":
-            client_socket.send(
-                "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
-            )
-            search_field = client_socket.recv(1024).decode().strip().lower()
-            client_socket.send("Введите поисковый запрос: ".encode())
-            search_value = client_socket.recv(1024).decode().strip().lower()
-            response = delete_books(client_socket, search_field, search_value)
-            client_socket.send(response.encode())
-
-        elif choice == "6":
-            client_socket.send("Выход из программы.".encode())
-            break
-
-        else:
-            client_socket.send("Неверный выбор. Попробуйте снова.".encode())
+            else:
+                client_socket.send("Неверный выбор. Попробуйте снова.".encode())
+    except Exception as e:
+        print(f"Ошибка с клиентом {addr}: {e}")
+    finally:
+        client_socket.close()
+        print(f"Клиент {addr} отключен")
 
 
-def start_server(host="127.0.0.1", port=9978):
+def start_server(host="127.0.0.1", port=9949):
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((host, port))
-    server.listen(5)
+    server.listen(10)  # Увеличить очередь подключений
+    for _ in range(9000):
+        book = generate_valid_book(authors_list, genres_list)
+        add_book(book)
     print(f"Сервер запущен на {host}:{port}")
 
     while True:
         client_socket, addr = server.accept()
-        print(f"Подключен к {addr}")
-        handle_client(client_socket)
-        client_socket.close()
-
+        client_socket.settimeout(30.0)
+        client_thread = threading.Thread(
+            target=handle_client,
+            args=(client_socket, addr),
+            daemon=True
+        )
+        client_thread.start()
 
 if __name__ == "__main__":
     start_server()
