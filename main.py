@@ -4,7 +4,7 @@ from faker import Faker
 import random
 import logging
 import re
-from datetime import datetime
+import time
 import socket
 import os
 from contextlib import contextmanager
@@ -125,6 +125,31 @@ genres_list = [
 ]
 
 
+@contextmanager
+def file_lock(filename, timeout=0.1):
+    lockfile = Path(f"{filename}.lock")
+    thread_name = threading.current_thread().name
+    logging.info(f"[{thread_name}] Пытаюсь захватить блокировку...")
+
+    start_time = time.time()
+    while True:
+        try:
+            lockfile.touch(exist_ok=False)
+            logging.info(f"[{thread_name}] ✅ Захватил блокировку!")
+            break
+        except FileExistsError:
+            if time.time() - start_time > timeout:
+                logging.error(f"[{thread_name}] ❌ Не успел за {timeout} сек!")
+                raise TimeoutError("Не удалось захватить блокировку")
+            time.sleep(0.01)
+
+    try:
+        yield
+    finally:
+        lockfile.unlink()
+        logging.info(f"[{thread_name}] 🔓 Освободил блокировку")
+
+
 def create_backup():
     backup_dir = Path("backups")
     backup_dir.mkdir(exist_ok=True)
@@ -150,22 +175,6 @@ def recover_from_backup():
         logging.info(f"Восстановлено из резервной копии: {latest_backup}")
         return True
     return False
-
-
-@contextmanager
-def library_file_manager():
-    """
-    Контекстный менеджер для автоматического управления файлом библиотеки
-    """
-    try:
-        if not Path(FILENAME).exists():
-            with open(FILENAME, 'w', encoding='utf-8') as f:
-                pass 
-        yield
-    except Exception as e:
-        logging.error(f"Ошибка при работе с файлом библиотеки: {e}")
-        recover_from_backup()
-        raise
 
 
 def validate_regex(field: str, value) -> None:
@@ -293,7 +302,6 @@ def generate_valid_book(authors_list, genres_list) -> dict:
     rating_value = random.randint(1, 10)
     description = fake.sentence(nb_words=random.randint(3, 10), variable_nb_words=True)
     rating = f"{rating_value}/10 - {description}"
-
     return {
         "name": name,
         "authors": authors,
@@ -318,7 +326,8 @@ def get_next_id() -> int:
         lines = file.readlines()
         if lines:
             last_book = line_to_dict(lines[-1])
-            return int(last_book["id"]) + 1
+            id = int(last_book["id"]) + 1
+            return id
     return 1
 
 
@@ -334,7 +343,6 @@ def is_unique_book(book: dict) -> bool:
                 and existing_book["year"] == book["year"]
                 and existing_book["genres"] == book["genres"]
             ):
-
                 return False
     return True
 
@@ -344,17 +352,113 @@ def add_book(book: dict):
     create_backup()
     book_id = get_next_id()
     book["id"] = book_id
-    
-    with library_file_manager():
-        if is_unique_book(book):
-            with open(FILENAME, ("a")) as file:
-                file.write(dict_to_line(book) + "\n")
-            return f"Добавлена книга: {book['name']} (ID: {book_id})"
-        else:
-            return f"Книга уже добавлена: {book['name']}, написанная {book['authors']}"
+    try:
+        with file_lock(FILENAME):
+            if is_unique_book(book):
+                with open(FILENAME, ("a")) as file:
+                    time.sleep(0.3)
+                    file.write(dict_to_line(book) + "\n")
+                res = f"Добавлена книга: {book['name']} (ID: {book_id})"
+                return res
+            else:
+                res = f"Книга уже добавлена: {book['name']}, написанная {book['authors']}"
+                return res
+    except TimeoutError:
+        return "Ошибка: не удалось выполнить обновление - система занята, попробуйте позже"
 
 
 # MULTIPLE BOOKS
+def modify_books_file(new_books: List[dict] = None, update=False) -> str:
+    """
+    Редактируем файл базы данных для операций удаления и редактирования
+    Функция обеспечивает атомарность операций - изменения либо применяются полностью, либо не применяются вообще.
+    """
+    res = ""
+    temp_filename = Path("temp.txt")
+    found = False
+    original_filename = Path(FILENAME)
+    try:
+        with file_lock(original_filename):
+            with original_filename.open("r") as file, temp_filename.open("w") as temp_file:
+                time.sleep(0.3)
+                for line in file:
+                    book = line_to_dict(line)
+                    # Проверяем, есть ли книга в списке для обновления
+                    for new_book in new_books:
+                        if book["id"] == new_book["id"]:
+                            found = True
+
+                            # Обновляем поля книги
+                            if update:
+                                book.update(new_book)
+                                temp_file.write(dict_to_line(book) + "\n")
+                                res += (
+                                    f"Обновлена книга: {book['name']} (ID: {book['id']})\n"
+                                )
+                                break
+                            else:
+                                res += f"Удалена книга: {book['name']} (ID: {book['id']})\n"
+                                break
+                    else:
+                        temp_file.write(line)
+
+            if found:
+                original_filename.unlink()
+                temp_filename.rename(original_filename)
+            else:
+                temp_filename.unlink()
+
+        return res
+    except TimeoutError:
+        return "Ошибка: не удалось выполнить обновление - система занята, попробуйте позже"
+
+
+def update_books(client_socket, field: str, value: str, new_field, new_value) -> str:
+    """ Обновление поля в строке"""
+    books = search_books(field, value)
+    for book in books:
+        book[new_field] = new_value
+    results = "Обновленные книги:\n"
+    results += print_books(books)
+    if not books:
+        return ""
+    client_socket.send(str(results).encode())
+
+
+    client_socket.send("Обновить? (д/н): ".encode())
+    choice = client_socket.recv(1024).decode().strip().lower()
+    while choice not in ("д", "н", "y", "n"):
+        client_socket.send("Некорректный ввод\n".encode())
+        client_socket.send("Обновить? (д/н): ".encode())
+        choice = client_socket.recv(1024).decode().strip().lower()
+    if choice == "д" or choice == "y":
+        return modify_books_file(books, True)
+    return ""
+
+
+def delete_books(client_socket, field: str, value: str) -> str:
+    """
+    Проходит по файлу, ищет в поле field совпадения с value.
+    Если находит, то записывает все строки до нее и после нее в файл temp.txt,
+    затем удаляет файл home_library.txt и переименовывает temp.txt в home_library.txt.
+    """
+    books = search_books(field, value)
+    results = "Найденные книги:\n"
+    results += print_books(books)
+    client_socket.send(str(results).encode())
+    if not books:
+        return ""
+    client_socket.send("Удалить? (д/н): \n".encode())
+    choice = client_socket.recv(1024).decode().strip().lower()
+    while choice not in ("д", "н", "y", "n"):
+        client_socket.send("Некорректный ввод\n".encode())
+        client_socket.send("Удалить? (д/н): ".encode())
+        choice = client_socket.recv(1024).decode().strip().lower()
+    if choice == "д" or choice == "y":
+        return modify_books_file(books)
+    return ""
+
+
 def print_all_books():
     """ Вывести книги"""
     original_filename = Path(FILENAME)
@@ -382,7 +486,8 @@ def print_all_books():
 def print_books(books: List[dict]) -> str:
     """ Вывести книгу"""
     if not books:
-        return "Нет книг для отображения.\n"
+        res = "Нет книг для отображения.\n"
+        return res
     res = ""
     res += f"Отображено {len(books)} книг(и):\n"
     for book in books:
@@ -414,72 +519,8 @@ def print_books(books: List[dict]) -> str:
                 + f"\tДата прочтения: {book['date_read']},\n"
                 + f"\tРейтинг: {book['rating']}\n"
             )
-            
-    return res
-
-
-def modify_books_file(new_books: List[dict] = None, update=False) -> str:
-    """ 
-    Редактируем файл базы данных для операций удаления и редактирования
-    Функция обеспечивает атомарность операций - изменения либо применяются полностью, либо не применяются вообще.
-    """
-    res = ""
-    temp_filename = Path("temp.txt")
-    found = False
-    original_filename = Path(FILENAME)
-
-    with original_filename.open("r") as file, temp_filename.open("w") as temp_file:
-        for line in file:
-            book = line_to_dict(line)
-            # Проверяем, есть ли книга в списке для обновления
-            for new_book in new_books:
-                if book["id"] == new_book["id"]:
-                    found = True
-
-                    # Обновляем поля книги
-                    if update:
-                        book.update(new_book)
-                        temp_file.write(dict_to_line(book) + "\n")
-                        res += (
-                            f"Обновлена книга: {book['name']} (ID: {book['id']})\n"
-                        )
-                        break
-                    else:
-                        res += f"Удалена книга: {book['name']} (ID: {book['id']})\n"
-                        break
-            else:
-                temp_file.write(line)
-
-    if found:
-        original_filename.unlink()
-        temp_filename.rename(original_filename)
-    else:
-        temp_filename.unlink()
 
     return res
-
-
-def delete_books(client_socket, field: str, value: str) -> str:
-    """
-    Проходит по файлу, ищет в поле field совпадения с value.
-    Если находит, то записывает все строки до нее и после нее в файл temp.txt,
-    затем удаляет файл home_library.txt и переименовывает temp.txt в home_library.txt.
-    """
-    books = search_books(field, value)
-    results = "Найденые книги:\n"
-    results += print_books(books)
-    client_socket.send(str(results).encode())
-    if not books:
-        return ""
-    client_socket.send("Удалить? (д/н): \n".encode())
-    choice = client_socket.recv(1024).decode().strip().lower()
-    while choice not in ("д", "н", "y", "n"):
-        client_socket.send("Некорректный ввод\n".encode())
-        client_socket.send("Удалить? (д/н): ".encode())
-        choice = client_socket.recv(1024).decode().strip().lower()
-    if choice == "д" or choice == "y":
-        return modify_books_file(books)
-    return ""
 
 
 def search_books(field: str, value: str) -> List[dict]:
@@ -504,29 +545,6 @@ def search_books(field: str, value: str) -> List[dict]:
     return result
 
 
-def update_books(client_socket, field: str, value: str, new_field, new_value) -> str:
-    """ Обновление поля в строке"""
-    books = search_books(field, value)
-    for book in books:
-        book[new_field] = new_value
-    results = "Обновленные книги:\n"
-    results += print_books(books)
-    if not books:
-        return ""
-    client_socket.send(str(results).encode())
-
-    
-    client_socket.send("Обновить? (д/н): ".encode())
-    choice = client_socket.recv(1024).decode().strip().lower()
-    while choice not in ("д", "н", "y", "n"):
-        client_socket.send("Некорректный ввод\n".encode())
-        client_socket.send("Обновить? (д/н): ".encode())
-        choice = client_socket.recv(1024).decode().strip().lower()
-    if choice == "д" or choice == "y":
-        return modify_books_file(books, True)
-    return ""
-
-
 def display_menu():
     return (
         "\n--- Меню Библиотеки ---\n"
@@ -548,6 +566,8 @@ def display_add_menu():
     )
 
 authors_list = list(authors_set())
+
+
 def handle_client(client_socket, addr):
     """ Меню ввода команд"""
     try:
@@ -568,11 +588,13 @@ def handle_client(client_socket, addr):
                         client_socket.send("Добавить? (д/н): \n".encode())
                         choice = client_socket.recv(1024).decode().strip().lower()
                         while choice not in ("д", "н", "y", "n"):
-                            client_socket.send("Некорретный ввод!\n".encode())
+                            client_socket.send("Некорректный ввод!\n".encode())
                             client_socket.send("Добавить? (д/н): \n".encode())
                             choice = client_socket.recv(1024).decode().strip()
                         if choice == "д" or choice == "y":
+                            logging.info(f"Добавление книги {book['name']} начато клиентом {addr}")
                             response = add_book(book)
+                            logging.info(f"Добавление книги {book['name']} завершено клиентом {addr}")
                             client_socket.send(response.encode())
                             break
                     elif choice_add == "1.2" or choice_add == "2" or choice_add == "1.2.":
@@ -701,7 +723,9 @@ def handle_client(client_socket, addr):
                             "date_read": date_read,
                             "rating": rating,
                         }
+                        logging.info(f"Добавление книги {book['name']} начато клиентом {addr}")
                         response = add_book(book)
+                        logging.info(f"Добавление книги {book['name']} завершено клиентом {addr}")
                         client_socket.send(response.encode())
                         break
                     elif choice_add == "1.3" or choice_add == "3" or choice_add == "1.3.":
@@ -710,7 +734,9 @@ def handle_client(client_socket, addr):
                         client_socket.send("Неверный выбор. Попробуйте снова.".encode())
 
             elif choice == "2":
+                logging.info("Вывод книг начат")
                 response = print_all_books()
+                logging.info("Вывод книг завершен")
                 client_socket.send(response.encode())
 
             elif choice == "3":
@@ -719,14 +745,16 @@ def handle_client(client_socket, addr):
                 )
                 search_field = client_socket.recv(1024).decode().strip().lower()
                 while search_field not in HEADERS:
-                    client_socket.send("Некорретный ввод!\n".encode())
+                    client_socket.send("Некорректный ввод!\n".encode())
                     client_socket.send(
                     "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
                     )
                     search_field = client_socket.recv(1024).decode().strip().lower()
                 client_socket.send("Введите поисковый запрос: ".encode())
                 search_value = client_socket.recv(1024).decode().strip().lower()
+                logging.info("Поиск книг начат")
                 results = print_books(search_books(search_field, search_value))
+                logging.info("Поиск книг завершен")
                 client_socket.send(str(results).encode())
 
             elif choice == "4":
@@ -735,7 +763,7 @@ def handle_client(client_socket, addr):
                 )
                 search_field = client_socket.recv(1024).decode().strip().lower()
                 while search_field not in HEADERS:
-                    client_socket.send("Некорретный ввод!\n".encode())
+                    client_socket.send("Некорректный ввод!\n".encode())
                     client_socket.send(
                     "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
                     )
@@ -747,7 +775,7 @@ def handle_client(client_socket, addr):
                 )
                 update_field = client_socket.recv(1024).decode().strip()
                 while update_field not in HEADERS:
-                    client_socket.send("Некорретный ввод!\n".encode())
+                    client_socket.send("Некорректный ввод!\n".encode())
                     client_socket.send(
                     "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
                     )
@@ -902,9 +930,11 @@ def handle_client(client_socket, addr):
                             )
                             rating = client_socket.recv(1024).decode().strip()
                             validate_regex("rating", rating)
+                            logging.info(f"Обновление книг начато клиентом {addr}")
                             response = update_books(
                                 client_socket, search_field, search_value, update_field, rating
                             )
+                            logging.info(f"Обновление книг завершено клиентом {addr}")
                             client_socket.send(response.encode())
                             break
                         except ValueError as error:
@@ -916,14 +946,16 @@ def handle_client(client_socket, addr):
                 )
                 search_field = client_socket.recv(1024).decode().strip().lower()
                 while search_field not in HEADERS:
-                    client_socket.send("Некорретный ввод!\n".encode())
+                    client_socket.send("Некорректный ввод!\n".encode())
                     client_socket.send(
                     "Введите поле для поиска (id/name/authors/genres/year/width/height/book_type/source/date_added/date_read/rating): ".encode()
                     )
                     search_field = client_socket.recv(1024).decode().strip().lower()
                 client_socket.send("Введите поисковый запрос: ".encode())
                 search_value = client_socket.recv(1024).decode().strip().lower()
+                logging.info(f"Удаление книг начато клиентом {addr}")
                 response = delete_books(client_socket, search_field, search_value)
+                logging.info(f"Удаление книг завершено клиентом {addr}")
                 client_socket.send(response.encode())
 
             elif choice == "6":
@@ -939,24 +971,30 @@ def handle_client(client_socket, addr):
         print(f"Клиент {addr} отключен")
 
 
-def start_server(host="127.0.0.1", port=9949):
+def start_server(host="127.0.0.1", port=9999):
+    lock_files = list(Path().glob("*.lock"))
+
+    if not lock_files:
+        logging.info("Нет файлов блокировки")
+    else:
+        for lock_file in lock_files:
+            lock_file.unlink()
+        print(f"Удалено {len(lock_files)} файлов блокировки")
+
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((host, port))
-    server.listen(10)  # Увеличить очередь подключений
-    for _ in range(9000):
-        book = generate_valid_book(authors_list, genres_list)
-        add_book(book)
+    server.listen(10)
     print(f"Сервер запущен на {host}:{port}")
 
     while True:
         client_socket, addr = server.accept()
-        client_socket.settimeout(30.0)
         client_thread = threading.Thread(
             target=handle_client,
             args=(client_socket, addr),
             daemon=True
         )
         client_thread.start()
+
 
 if __name__ == "__main__":
     start_server()

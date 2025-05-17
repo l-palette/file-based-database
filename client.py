@@ -1,7 +1,7 @@
 import socket
 import time
 
-def auto_add_books(host='127.0.0.1', port=9946, count=1000):
+def auto_add_books(host='127.0.0.1', port=9956, count=1000):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((host, port))
